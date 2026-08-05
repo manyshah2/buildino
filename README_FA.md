@@ -1,4 +1,4 @@
-# Buildino Public Runner Template v0.11.7
+# Buildino Public Runner Template v0.11.8
 
 این قالب برای Build چندسکویی بیلدینو استفاده می‌شود.
 
@@ -11,8 +11,8 @@
 ## فایل‌های فعال
 
 ```text
-.github/workflows/buildino-runner-wf18.yml
-.github/workflows/buildino-cleanup-wf15.yml
+.github/workflows/buildino-runner-wf19.yml
+.github/workflows/buildino-cleanup-wf16.yml
 scripts/run_android_build.sh
 scripts/run_windows_build.ps1
 scripts/run_ios_build.sh

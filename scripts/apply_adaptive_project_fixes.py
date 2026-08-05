@@ -255,6 +255,90 @@ def align_jvm_targets(project: Path, log: str, preflight: dict | None = None) ->
     return {"rule": "android_jvm_target_alignment", "file": str(path.relative_to(project)), "before": f"mixed JVM targets {match.group(1)}/{match.group(2)}", "after": str(target)}
 
 
+
+def add_gradle_dependency(path: Path, coordinate: str) -> tuple[bool, str]:
+    """Add a dependency to the module Gradle file without touching the repository outside workspace."""
+    text = read_text(path)
+    if not text:
+        return False, "missing_gradle"
+    artifact = coordinate.split(":", 2)[:2]
+    artifact_key = ":".join(artifact)
+    if artifact_key and artifact_key in text:
+        # An existing lower version is left intact; adding a second direct declaration lets Gradle
+        # resolve the highest compatible version deterministically.
+        exact = re.search(rf"{re.escape(artifact_key)}:[^'\"\s)]+", text)
+        if exact and exact.group(0) == coordinate:
+            return False, "already_present"
+    marker = re.search(r"(?m)^(?P<i>\s*)dependencies\s*\{\s*$", text)
+    line = f'    implementation("{coordinate}")' if path.suffix == ".kts" else f"    implementation '{coordinate}'"
+    if marker:
+        indent = marker.group("i") + "    "
+        line = f'{indent}implementation("{coordinate}")' if path.suffix == ".kts" else f"{indent}implementation '{coordinate}'"
+        updated = text[:marker.end()] + "\n" + line + text[marker.end():]
+    else:
+        updated = text.rstrip() + "\n\ndependencies {\n" + line + "\n}\n"
+    path.write_text(updated, encoding="utf-8")
+    return True, "added"
+
+
+def add_targeted_lint_disable(path: Path, lint_id: str) -> bool:
+    text = read_text(path)
+    if not text or lint_id in text:
+        return False
+    android = re.search(r"(?m)^(?P<i>\s*)android\s*\{\s*$", text)
+    if not android:
+        return False
+    indent = android.group("i") + "    "
+    if path.suffix == ".kts":
+        block = f'\n{indent}lint {{\n{indent}    disable += "{lint_id}"\n{indent}}}\n'
+    else:
+        block = f"\n{indent}lintOptions {{\n{indent}    disable '{lint_id}'\n{indent}}}\n"
+    updated = text[:android.end()] + block + text[android.end():]
+    path.write_text(updated, encoding="utf-8")
+    return True
+
+
+def add_appcompat_for_missing_theme(project: Path, log: str, preflight: dict | None = None) -> dict | None:
+    if not re.search(r"Theme\.AppCompat(?:\.[A-Za-z0-9_]+)*.*(?:not found|resource.*not found)|resource style/Theme\.AppCompat", log, re.I | re.S):
+        return None
+    path = app_gradle(project, preflight)
+    if not path:
+        return None
+    coordinate = "androidx.appcompat:appcompat:1.7.1"
+    changed, reason = add_gradle_dependency(path, coordinate)
+    if not changed:
+        return None
+    return {
+        "rule": "android_appcompat_missing_theme",
+        "file": str(path.relative_to(project)),
+        "before": "Theme.AppCompat resource unavailable",
+        "after": coordinate,
+        "workspace_only": True,
+        "reason": reason,
+    }
+
+
+def upgrade_fragment_for_activity_result(project: Path, log: str, preflight: dict | None = None) -> dict | None:
+    if not re.search(r"InvalidFragmentVersionForActivityResult|Upgrade Fragment version to at least\s+1\.3\.0", log, re.I):
+        return None
+    path = app_gradle(project, preflight)
+    if not path:
+        return None
+    coordinate = "androidx.fragment:fragment:1.3.6"
+    dependency_added, _ = add_gradle_dependency(path, coordinate)
+    lint_disabled = add_targeted_lint_disable(path, "InvalidFragmentVersionForActivityResult")
+    if not dependency_added and not lint_disabled:
+        return None
+    return {
+        "rule": "android_fragment_activity_result_compat",
+        "file": str(path.relative_to(project)),
+        "before": "Fragment older than 1.3.0 / targeted lint failure",
+        "after": f"{coordinate}; disable only InvalidFragmentVersionForActivityResult lint",
+        "dependency_added": dependency_added,
+        "lint_disabled": lint_disabled,
+        "workspace_only": True,
+    }
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", required=True, type=Path)
@@ -272,7 +356,7 @@ def main() -> int:
         return 0
 
     attempt = {"build_label": args.build_label, "applied_count": 0, "rules_checked": [], "skipped": []}
-    fixers = (migrate_manifest_package, insert_namespace, update_min_sdk, update_compile_sdk, add_exported, align_jvm_targets)
+    fixers = (add_appcompat_for_missing_theme, upgrade_fragment_for_activity_result, migrate_manifest_package, insert_namespace, update_min_sdk, update_compile_sdk, add_exported, align_jvm_targets)
     for fixer in fixers:
         attempt["rules_checked"].append(fixer.__name__)
         try:
