@@ -52,6 +52,7 @@ for key, filename in (
     ("project_prepare", "project-prepare.json"),
     ("preflight", "preflight.json"),
     ("android_components", "android-components.json"),
+    ("gradle_java_home_fixes", "gradle-java-home-fixes.json"),
     ("error_report", "error-report.json"),
 ):
     path = root / filename
@@ -147,6 +148,9 @@ failure_stage="android_platform_prepare"; failure_kind="user"; failure_code=31
 python3 scripts/prepare_flutter_platform.py "$project_dir" handoff/project-prepare.json 2>&1 | tee handoff/logs/project-prepare.log
 
 test -d "$project_dir/android" && test -d "$project_dir/android/app"
+
+failure_stage="gradle_java_home_sanitize"; failure_kind="infrastructure"; failure_code=17
+python3 scripts/sanitize_gradle_java_home.py "$project_dir" handoff/gradle-java-home-fixes.json 2>&1 | tee handoff/logs/gradle-java-home-fixes.log
 
 failure_stage="project_preflight"; failure_kind="user"; failure_code=13
 python3 scripts/buildino_preflight.py "$project_dir" handoff/preflight.json 2>&1 | tee handoff/logs/preflight.log

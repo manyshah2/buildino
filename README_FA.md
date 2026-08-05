@@ -1,4 +1,4 @@
-# Buildino Public Runner Template v0.11.5
+# Buildino Public Runner Template v0.11.6
 
 این قالب برای Build چندسکویی بیلدینو استفاده می‌شود.
 
@@ -11,8 +11,8 @@
 ## فایل‌های فعال
 
 ```text
-.github/workflows/buildino-runner-wf16.yml
-.github/workflows/buildino-cleanup-wf13.yml
+.github/workflows/buildino-runner-wf17.yml
+.github/workflows/buildino-cleanup-wf14.yml
 scripts/run_android_build.sh
 scripts/run_windows_build.ps1
 scripts/run_ios_build.sh
@@ -24,3 +24,7 @@ IPA بدون Secrets اپل به‌صورت unsigned ساخته می‌شود. �
 ## Java Android
 
 AGP 8 با Java 17 اجرا می‌شود و خطای Runtime اعلام‌شده توسط Gradle یک‌بار به‌صورت خودکار با Java مناسب تکرار می‌شود.
+
+## سازگاری Gradle محلی
+
+اگر `org.gradle.java.home` به مسیر مخصوص دستگاه کاربر اشاره کند و روی Runner وجود نداشته باشد، فقط در Workspace موقت غیرفعال می‌شود. سورس اصلی و Repository کاربر تغییر نمی‌کند. پروژه‌های بدون Wrapper با Gradle ایزوله و سازگار اجرا می‌شوند.

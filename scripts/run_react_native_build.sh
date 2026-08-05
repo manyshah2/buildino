@@ -15,7 +15,7 @@ outputs=[]
 for p in sorted(Path('handoff/result').glob('*')):
  if p.is_file() and p.suffix in {'.apk','.aab'}: outputs.append({'type':p.suffix[1:],'name':p.name,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size})
 data={'status':os.environ['STATUS'],'failure_stage':os.environ['FAILURE_STAGE'],'failure_kind':os.environ['FAILURE_KIND'],'failure_code':int(os.environ['FAILURE_CODE']),'project_dir':os.environ['PROJECT_DIR'],'request_id':os.environ['REQUEST_ID'],'target':os.environ['BUILD_TARGET'],'outputs':outputs,'framework':'react_native','package_manager':os.environ.get('PACKAGE_MANAGER'),'fallback_signing_used':os.environ.get('FALLBACK_SIGNING_USED')=='true','java_version':os.environ.get('JAVA_VERSION') or None,'flavors':json.loads(os.environ.get('FLAVORS_JSON','[]'))}
-for key,name in [('framework_detection','framework-detection.json'),('project_discovery','project-discovery.json'),('preflight','preflight.json'),('error_report','error-report.json')]:
+for key,name in [('framework_detection','framework-detection.json'),('project_discovery','project-discovery.json'),('preflight','preflight.json'),('gradle_java_home_fixes','gradle-java-home-fixes.json'),('error_report','error-report.json')]:
  p=Path('handoff')/name
  if p.is_file():
   try:data[key]=json.loads(p.read_text())
@@ -49,7 +49,8 @@ PY
  else echo 'React Native android directory is missing and this is not a compatible Expo project.' >&2;exit 31;fi
 fi
 test -d "$project_dir/android/app"
-failure_stage=project_preflight;failure_code=13;python3 scripts/buildino_preflight.py "$project_dir" handoff/preflight.json 2>&1|tee handoff/logs/preflight.log
+failure_stage=gradle_java_home_sanitize;failure_kind=infrastructure;failure_code=17;python3 scripts/sanitize_gradle_java_home.py "$project_dir" handoff/gradle-java-home-fixes.json 2>&1|tee handoff/logs/gradle-java-home-fixes.log
+failure_stage=project_preflight;failure_kind=user;failure_code=13;python3 scripts/buildino_preflight.py "$project_dir" handoff/preflight.json 2>&1|tee handoff/logs/preflight.log
 java_version="$(python3 -c 'import json;print(json.load(open("handoff/preflight.json"))["java_version"])')";java_home="$(python3 -c 'import json;print(json.load(open("handoff/preflight.json"))["java_home"])')";fallback_signing_used="$(python3 -c 'import json;print(str(json.load(open("handoff/preflight.json"))["fallback_signing_used"]).lower())')";flavors_json="$(python3 -c 'import json;print(json.dumps(json.load(open("handoff/preflight.json"))["flavors"],separators=(",",":")))')";export JAVA_HOME="$java_home";export PATH="$JAVA_HOME/bin:$PATH"
 chmod +x "$project_dir/android/gradlew"
 mapfile -t flavors < <(python3 -c 'import json;print("\n".join(json.load(open("handoff/preflight.json"))["flavors"]))');[ ${#flavors[@]} -gt 0 ]||flavors=("")

@@ -67,6 +67,7 @@ for key, filename in (
     ("project_discovery", "project-discovery.json"),
     ("preflight", "preflight.json"),
     ("android_components", "android-components.json"),
+    ("gradle_java_home_fixes", "gradle-java-home-fixes.json"),
     ("error_report", "error-report.json"),
 ):
     path=Path("handoff") / filename
@@ -150,7 +151,13 @@ run_gradle_retry() {
 }
 
 install_fallback_gradle() {
-  local version="$1" destination="/tmp/buildino-gradle-${version}"
+  local version="${1:-}"
+  [ -n "$version" ] || version="8.10.2"
+  if [[ ! "$version" =~ ^[0-9]+([.][0-9]+){1,2}$ ]]; then
+    echo "Invalid fallback Gradle version: $version" >&2
+    return 16
+  fi
+  local destination="/tmp/buildino-gradle-${version}"
   local archive="/tmp/buildino-gradle-${version}.zip"
   if [ ! -x "$destination/gradle-${version}/bin/gradle" ]; then
     rm -rf "$destination" "$archive"
@@ -172,6 +179,9 @@ python3 scripts/prepare_source.py "$SOURCE_ZIP" work/project 2>&1 | tee handoff/
 failure_stage="source_discovery"; failure_code=5
 project_dir="$(python3 scripts/find_android_project.py work/project --framework native_android --report handoff/project-discovery.json 2>&1 | tee handoff/logs/project-discovery.log | tail -n 1)"
 test -n "$project_dir"
+
+failure_stage="gradle_java_home_sanitize"; failure_kind="infrastructure"; failure_code=17
+python3 scripts/sanitize_gradle_java_home.py "$project_dir" handoff/gradle-java-home-fixes.json 2>&1 | tee handoff/logs/gradle-java-home-fixes.log
 
 if [ "${JAVA8_SETUP_OUTCOME:-success}" != "success" ] || \
    [ "${JAVA11_SETUP_OUTCOME:-success}" != "success" ] || \
@@ -204,7 +214,7 @@ if [ -f "$project_dir/gradlew" ]; then
   gradle_mode="wrapper"
 else
   failure_stage="gradle_fallback_setup"; failure_kind="infrastructure"; failure_code=16
-  install_fallback_gradle "$gradle_version" 2>&1 | tee handoff/logs/gradle-fallback-setup.log
+  install_fallback_gradle "$gradle_version" > >(tee handoff/logs/gradle-fallback-setup.log) 2>&1
 fi
 
 prefix="$module_path"
