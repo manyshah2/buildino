@@ -108,6 +108,24 @@ is_transient_log() {
   grep -Eiq 'UnknownHostException|Connection reset|Read timed out|Could not GET|Could not HEAD|Temporary failure|timed out|HTTP 5[0-9][0-9]|503 Service Unavailable|429 Too Many Requests' "$file"
 }
 
+java_required_by_log() {
+  python3 scripts/android_java_runtime.py required-from-log "$1" 2>/dev/null || true
+}
+
+activate_java_runtime() {
+  local required="$1" reason="$2" var home
+  var="JAVA_HOME_${required}_X64"
+  home="${!var:-}"
+  [ -n "$home" ] || return 1
+  python3 scripts/android_java_runtime.py apply handoff/preflight.json "$required" --reason "$reason" \
+    > "handoff/logs/java-runtime-switch-${required}.json"
+  java_version="$required"
+  java_home="$home"
+  export JAVA_HOME="$java_home"
+  export PATH="$JAVA_HOME/bin:$PATH"
+  java -version 2>&1 | tee -a "handoff/logs/java-selected.log"
+}
+
 failure_stage="source_validation"; failure_kind="user"; failure_code=3
 python3 scripts/validate_zip.py "$SOURCE_ZIP" 2>&1 | tee handoff/logs/source-validation.log
 
@@ -205,6 +223,21 @@ PY
   (cd "$project_dir" && "${cmd[@]}") 2>&1 | tee "$log"
   rc=${PIPESTATUS[0]}
   set -e
+
+  # Retry once with the Java version explicitly required by AGP/Gradle.
+  if [ "$rc" -ne 0 ]; then
+    required_java="$(java_required_by_log "$log")"
+    if [ -n "$required_java" ] && [ "${java_version:-0}" -lt "$required_java" ] && \
+       activate_java_runtime "$required_java" "Flutter Android build requested Java ${required_java}"; then
+      attempt=2
+      failure_stage="flutter_build_${label//-/_}_java_${required_java}_retry"
+      log="handoff/logs/flutter-build-${label}-attempt${attempt}-java${required_java}.log"
+      set +e
+      (cd "$project_dir" && "${cmd[@]}") 2>&1 | tee "$log"
+      rc=${PIPESTATUS[0]}
+      set -e
+    fi
+  fi
 
   # One network-only retry does not modify source.
   if [ "$rc" -ne 0 ] && is_transient_log "$log"; then
