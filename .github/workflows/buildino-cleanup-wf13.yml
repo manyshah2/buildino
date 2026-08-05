@@ -1,0 +1,130 @@
+name: Buildino Cleanup WF-13
+
+run-name: "Buildino Cleanup WF-13 • ${{ github.run_id }}"
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: buildino-cleanup-wf13
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    name: Delete Buildino releases and completed runs older than 48 hours
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RETENTION_SECONDS: "172800"
+
+    steps:
+      - name: Delete expired temporary Releases and tags
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > /tmp/expired-releases.txt
+          import json, os, subprocess, time
+          repository = os.environ["GITHUB_REPOSITORY"]
+          cutoff = time.time() - int(os.environ["RETENTION_SECONDS"])
+          raw = subprocess.check_output([
+              "gh", "api", "--paginate", "--slurp", f"/repos/{repository}/releases?per_page=100"
+          ], text=True)
+          pages = json.loads(raw)
+          releases = [item for page in pages for item in page]
+          for release in releases:
+              tag = str(release.get("tag_name", ""))
+              created = release.get("created_at") or release.get("published_at")
+              if not tag.startswith("buildino-") or not created:
+                  continue
+              from datetime import datetime
+              timestamp = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+              if timestamp < cutoff:
+                  print(tag)
+          PY
+
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "Deleting expired release: $tag"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          done < /tmp/expired-releases.txt
+
+      - name: Delete completed Runner workflow runs older than 48 hours
+        shell: bash
+        env:
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > /tmp/expired-runs.txt
+          import json, os, subprocess, time
+          from datetime import datetime
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          cutoff = time.time() - int(os.environ["RETENTION_SECONDS"])
+          current = int(os.environ["CURRENT_RUN_ID"])
+          raw = subprocess.check_output([
+              "gh", "api", "--paginate", "--slurp",
+              f"/repos/{repository}/actions/workflows/buildino-runner-wf16.yml/runs?status=completed&per_page=100"
+          ], text=True)
+          pages = json.loads(raw)
+          runs = [run for page in pages for run in page.get("workflow_runs", [])]
+          for run in runs:
+              run_id = int(run["id"])
+              if run_id == current:
+                  continue
+              timestamp = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00")).timestamp()
+              if timestamp < cutoff:
+                  print(run_id)
+          PY
+
+          while IFS= read -r run_id; do
+            [ -n "$run_id" ] || continue
+            echo "Deleting expired workflow run: $run_id"
+            gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" >/dev/null || true
+          done < /tmp/expired-runs.txt
+
+      - name: Delete stale Buildino handoff caches older than 48 hours
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > /tmp/expired-caches.txt
+          import json, os, subprocess, time
+          from datetime import datetime
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          cutoff = time.time() - int(os.environ["RETENTION_SECONDS"])
+          raw = subprocess.check_output([
+              "gh", "api", "--paginate", "--slurp", f"/repos/{repository}/actions/caches?per_page=100"
+          ], text=True)
+          pages = json.loads(raw)
+          caches = [cache for page in pages for cache in page.get("actions_caches", [])]
+          for cache in caches:
+              key = str(cache.get("key", ""))
+              created = cache.get("created_at")
+              if not key.startswith("buildino-handoff-wf16-") or not created:
+                  continue
+              timestamp = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+              if timestamp < cutoff:
+                  print(cache["id"])
+          PY
+
+          while IFS= read -r cache_id; do
+            [ -n "$cache_id" ] || continue
+            echo "Deleting expired Buildino cache: $cache_id"
+            gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" >/dev/null || true
+          done < /tmp/expired-caches.txt
+
+      - name: Cleanup summary
+        shell: bash
+        run: |
+          {
+            echo "## Buildino Cleanup WF-13"
+            echo
+            echo "Temporary Release and completed Runner Run retention: approximately 48 hours."
+          } >> "$GITHUB_STEP_SUMMARY"
