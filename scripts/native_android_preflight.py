@@ -9,6 +9,8 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from android_java_runtime import detect_agp_version, required_java_runtime
+
 
 def read_text(path: Path) -> str:
     try:
@@ -21,27 +23,6 @@ def parse_gradle_version(root: Path) -> str | None:
     body = read_text(root / "gradle/wrapper/gradle-wrapper.properties")
     match = re.search(r"gradle-([0-9]+(?:\.[0-9]+){1,2})-(?:bin|all)\.zip", body)
     return match.group(1) if match else None
-
-
-def detect_agp_version(root: Path) -> str | None:
-    bodies = []
-    for path in (
-        root / "settings.gradle", root / "settings.gradle.kts",
-        root / "build.gradle", root / "build.gradle.kts",
-        root / "gradle/libs.versions.toml",
-    ):
-        bodies.append(read_text(path))
-    joined = "\n".join(bodies)
-    patterns = (
-        r"com\.android\.application[\"']?\s+version\s+[\"']([^\"']+)",
-        r"com\.android\.tools\.build:gradle:([^\"'\s)]+)",
-        r"(?m)^\s*(?:agp|androidGradlePlugin)\s*=\s*[\"']([^\"']+)",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, joined)
-        if match:
-            return match.group(1)
-    return None
 
 
 def fallback_gradle_version(agp: str | None) -> str:
@@ -70,37 +51,7 @@ def fallback_gradle_version(agp: str | None) -> str:
 
 
 def required_java(gradle_version: str | None, agp: str | None, bodies: str) -> int:
-    for version in (21, 17, 11, 8):
-        patterns = (
-            rf"VERSION_{version}\b",
-            rf"jvmTarget\s*=\s*[\"']{version}[\"']",
-            rf"jvmToolchain\s*\(\s*{version}\s*\)",
-            rf"JavaLanguageVersion\.of\s*\(\s*{version}\s*\)",
-        )
-        if any(re.search(pattern, bodies) for pattern in patterns):
-            return version
-    if agp:
-        nums = [int(x) for x in re.findall(r"\d+", agp)[:2]]
-        if nums:
-            major = nums[0]
-            if major >= 9:
-                return 17
-            if major >= 8:
-                return 17
-            if major == 7:
-                return 11
-    if gradle_version:
-        nums = [int(x) for x in re.findall(r"\d+", gradle_version)[:2]]
-        if nums:
-            major, minor = (nums + [0])[:2]
-            if (major, minor) >= (8, 5):
-                return 17
-            if (major, minor) >= (7, 3):
-                return 17
-            if major >= 5:
-                return 11
-            return 8
-    return 17
+    return required_java_runtime(gradle_version, agp, bodies)
 
 
 def balanced_block(text: str, keyword: str) -> str:
