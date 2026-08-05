@@ -23,6 +23,7 @@ language=""
 flavors_json="[]"
 fallback_signing_used="true"
 gradle_mode=""
+LAST_GRADLE_LOG=""
 declare -a GRADLE_CMD=()
 
 write_status() {
@@ -68,12 +69,18 @@ for key, filename in (
     ("preflight", "preflight.json"),
     ("android_components", "android-components.json"),
     ("gradle_java_home_fixes", "gradle-java-home-fixes.json"),
+    ("gradle_runtime_switches", "gradle-runtime-switches.json"),
+    ("adaptive_fixes", "adaptive-fixes.json"),
     ("error_report", "error-report.json"),
 ):
     path=Path("handoff") / filename
     if path.is_file():
         try: data[key]=json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError: pass
+adaptive = data.get("adaptive_fixes")
+if isinstance(adaptive, dict):
+    data["auto_fixes"] = adaptive.get("applied", [])
+    data["auto_fix_attempts"] = adaptive.get("attempts", [])
 Path("handoff/status.json").write_text(json.dumps(data, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
 PY
 }
@@ -82,6 +89,7 @@ create_error_report() {
   local args=(--stage "$failure_stage" --code "$failure_code" --output handoff/error-report.json)
   [ -s handoff/preflight.json ] && args+=(--preflight handoff/preflight.json)
   [ -s handoff/project-discovery.json ] && args+=(--project-discovery handoff/project-discovery.json)
+  [ -s handoff/adaptive-fixes.json ] && args+=(--adaptive-fixes handoff/adaptive-fixes.json)
   for log in handoff/logs/*.log; do [ -f "$log" ] && args+=(--log "$log"); done
   python3 scripts/analyze_build_error.py "${args[@]}" || true
 }
@@ -109,6 +117,60 @@ java_required_by_log() {
   python3 scripts/android_java_runtime.py required-from-log "$1" 2>/dev/null || true
 }
 
+gradle_required_by_log() {
+  python3 - "$1" <<'PY'
+import re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+patterns = (
+    r"Minimum supported Gradle version is\s*([0-9]+(?:\.[0-9]+){1,2})",
+    r"requires Gradle\s*([0-9]+(?:\.[0-9]+){1,2})\s*or newer",
+    r"Gradle version\s*([0-9]+(?:\.[0-9]+){1,2})\s*or higher is required",
+)
+for pattern in patterns:
+    match = re.search(pattern, text, re.I)
+    if match:
+        print(match.group(1))
+        break
+PY
+}
+
+version_is_lower() {
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+def parts(value):
+    nums = [int(x) for x in re.findall(r"\d+", value)[:3]]
+    return tuple((nums + [0, 0, 0])[:3])
+raise SystemExit(0 if parts(sys.argv[1]) < parts(sys.argv[2]) else 1)
+PY
+}
+
+record_gradle_runtime_switch() {
+  local from_version="$1" to_version="$2" reason="$3"
+  FROM_VERSION="$from_version" TO_VERSION="$to_version" REASON="$reason" python3 - <<'PY'
+import json, os
+from pathlib import Path
+path = Path("handoff/gradle-runtime-switches.json")
+try:
+    data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"schema": 1, "workspace_only": True, "switches": []}
+except json.JSONDecodeError:
+    data = {"schema": 1, "workspace_only": True, "switches": []}
+data.setdefault("switches", []).append({
+    "from": os.environ["FROM_VERSION"],
+    "to": os.environ["TO_VERSION"],
+    "reason": os.environ["REASON"],
+    "source_modified": False,
+})
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+preflight = Path("handoff/preflight.json")
+if preflight.is_file():
+    payload = json.loads(preflight.read_text(encoding="utf-8"))
+    payload["gradle_version"] = os.environ["TO_VERSION"]
+    payload["gradle_mode"] = "downloaded_compatibility_retry"
+    preflight.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 activate_java_runtime() {
   local required="$1" reason="$2" var home
   var="JAVA_HOME_${required}_X64"
@@ -125,14 +187,25 @@ activate_java_runtime() {
 
 run_gradle_retry() {
   local label="$1"; shift
-  local rc=1
+  local rc=1 required_java required_gradle
   for attempt in 1 2 3; do
     local log="handoff/logs/${label}-attempt${attempt}.log"
+    LAST_GRADLE_LOG="$log"
     set +e
     (cd "$project_dir" && "${GRADLE_CMD[@]}" "$@" --no-daemon --stacktrace --warning-mode all) 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}
     set -e
     [ "$rc" -eq 0 ] && return 0
+
+    required_gradle="$(gradle_required_by_log "$log")"
+    if [ "$attempt" -lt 3 ] && [ -n "$required_gradle" ] && version_is_lower "${gradle_version:-0}" "$required_gradle"; then
+      if activate_gradle_runtime "$required_gradle" "Gradle requested minimum version ${required_gradle} while running ${label}"; then
+        failure_stage="${label//-/_}_gradle_${required_gradle//./_}_retry"
+        sleep 2
+        continue
+      fi
+    fi
+
     required_java="$(java_required_by_log "$log")"
     if [ "$attempt" -lt 3 ] && [ -n "$required_java" ] && [ "${java_version:-0}" -lt "$required_java" ]; then
       if activate_java_runtime "$required_java" "Gradle requested Java ${required_java} while running ${label}"; then
@@ -170,6 +243,14 @@ install_fallback_gradle() {
   fi
   GRADLE_CMD=("$destination/gradle-${version}/bin/gradle")
   gradle_mode="downloaded_fallback"
+}
+
+activate_gradle_runtime() {
+  local required="$1" reason="$2" previous="${gradle_version:-unknown}"
+  install_fallback_gradle "$required" > >(tee -a handoff/logs/gradle-compatibility-switch.log) 2>&1
+  gradle_version="$required"
+  gradle_mode="downloaded_compatibility_retry"
+  record_gradle_runtime_switch "$previous" "$required" "$reason"
 }
 
 failure_stage="source_validation"; failure_kind="user"; failure_code=3
@@ -246,7 +327,26 @@ build_one() {
   local type="$1" task rc
   if [ "$type" = "apk" ]; then task="${prefix}assembleRelease"; else task="${prefix}bundleRelease"; fi
   failure_stage="native_android_${type}_build"; failure_kind="user"; failure_code=20
-  run_gradle_retry "native-${type}" "$task" || { rc=$?; failure_code="$rc"; return "$rc"; }
+  if run_gradle_retry "native-${type}" "$task"; then
+    :
+  else
+    rc=$?
+    failure_stage="native_android_${type}_autofix"; failure_code="$rc"
+    local adaptive_summary adaptive_count
+    adaptive_summary="$(python3 scripts/apply_adaptive_project_fixes.py \
+      --project "$project_dir" --preflight handoff/preflight.json \
+      --log "$LAST_GRADLE_LOG" --output handoff/adaptive-fixes.json \
+      --build-label "native-${type}" 2>&1 || true)"
+    printf '%s\n' "$adaptive_summary" | tee "handoff/logs/native-${type}-autofix.log"
+    adaptive_count="$(python3 -c 'import json,sys; print(int(json.loads(sys.argv[1]).get("applied_count",0)))' "$adaptive_summary" 2>/dev/null || echo 0)"
+    if [ "$adaptive_count" -gt 0 ]; then
+      failure_stage="native_android_${type}_after_adaptive_fix"; failure_code=20
+      run_gradle_retry "native-${type}-autofix" "$task" || { rc=$?; failure_code="$rc"; return "$rc"; }
+    else
+      failure_code="$rc"
+      return "$rc"
+    fi
+  fi
   failure_stage="${type}_output_collect"; failure_code=30
   copy_outputs "$type" || return 30
 }

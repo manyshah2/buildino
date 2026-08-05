@@ -33,8 +33,11 @@ def fallback_gradle_version(agp: str | None) -> str:
     except ValueError:
         return "8.10.2"
     major, minor = (parts + (0, 0))[:2]
-    if major >= 9:
-        return "9.1.0"
+    if major >= 10:
+        return "9.3.1"
+    if major == 9:
+        # AGP 9.0 works with Gradle 9.1; AGP 9.1+ requires Gradle 9.3.1.
+        return "9.3.1" if minor >= 1 else "9.1.0"
     if major == 8:
         return {
             0: "8.0.2", 1: "8.0.2", 2: "8.2.1", 3: "8.4",

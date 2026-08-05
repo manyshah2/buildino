@@ -32,15 +32,49 @@ def load_report(path: Path) -> dict:
     return data
 
 
-def app_gradle(project: Path) -> Path | None:
-    for relative in ("android/app/build.gradle.kts", "android/app/build.gradle"):
-        path = project / relative
+def load_preflight(path: Path | None) -> dict:
+    if not path or not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def app_module_dir(project: Path, preflight: dict | None = None) -> Path | None:
+    preflight = preflight or {}
+    raw = preflight.get("module_dir")
+    if isinstance(raw, str) and raw:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = project / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(project.resolve())
+        except (OSError, ValueError):
+            resolved = None
+        if resolved and resolved.is_dir():
+            return resolved
+    for relative in ("android/app", "app"):
+        candidate = project / relative
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def app_gradle(project: Path, preflight: dict | None = None) -> Path | None:
+    module = app_module_dir(project, preflight)
+    if not module:
+        return None
+    for name in ("build.gradle.kts", "build.gradle"):
+        path = module / name
         if path.is_file():
             return path
     return None
 
 
-def derive_namespace(project: Path, text: str) -> str | None:
+def derive_namespace(project: Path, text: str, preflight: dict | None = None) -> str | None:
     patterns = (
         r"\bapplicationId\s*(?:=\s*)?['\"]([A-Za-z][A-Za-z0-9_.]+)['\"]",
         r"\bnamespace\s*(?:=\s*)?['\"]([A-Za-z][A-Za-z0-9_.]+)['\"]",
@@ -49,27 +83,29 @@ def derive_namespace(project: Path, text: str) -> str | None:
         match = re.search(pattern, text)
         if match:
             return match.group(1)
-    manifest = read_text(project / "android/app/src/main/AndroidManifest.xml")
+    module = app_module_dir(project, preflight)
+    manifest = read_text(module / "src/main/AndroidManifest.xml") if module else ""
     match = re.search(r"\bpackage\s*=\s*['\"]([A-Za-z][A-Za-z0-9_.]+)['\"]", manifest)
     if match:
         return match.group(1)
-    for path in list((project / "android/app/src/main").rglob("*.kt")) + list((project / "android/app/src/main").rglob("*.java")):
+    source_root = module / "src/main" if module else project / "android/app/src/main"
+    for path in list(source_root.rglob("*.kt")) + list(source_root.rglob("*.java")):
         match = re.search(r"(?m)^\s*package\s+([A-Za-z][A-Za-z0-9_.]+)", read_text(path))
         if match:
             return match.group(1)
     return None
 
 
-def insert_namespace(project: Path, log: str) -> dict | None:
+def insert_namespace(project: Path, log: str, preflight: dict | None = None) -> dict | None:
     if not re.search(r"Namespace not specified|namespace.*not specified", log, re.I):
         return None
-    path = app_gradle(project)
+    path = app_gradle(project, preflight)
     if not path:
         return None
     text = read_text(path)
     if re.search(r"(?m)^\s*namespace\s*(?:=\s*)?['\"]", text):
         return None
-    namespace = derive_namespace(project, text)
+    namespace = derive_namespace(project, text, preflight)
     if not namespace:
         return None
     marker = re.search(r"(?m)^\s*android\s*\{\s*$", text)
@@ -81,6 +117,47 @@ def insert_namespace(project: Path, log: str) -> dict | None:
     updated = text[:marker.end()] + "\n" + syntax + text[marker.end():]
     path.write_text(updated, encoding="utf-8")
     return {"rule": "android_namespace_missing", "file": str(path.relative_to(project)), "before": "namespace missing", "after": namespace}
+
+
+def migrate_manifest_package(project: Path, log: str, preflight: dict | None = None) -> dict | None:
+    if not re.search(r"Incorrect package=[\"'].*?[\"'] found in source AndroidManifest\.xml|Setting the namespace via the package attribute.*no longer supported", log, re.I | re.S):
+        return None
+    module = app_module_dir(project, preflight)
+    gradle = app_gradle(project, preflight)
+    if not module or not gradle:
+        return None
+    manifest = module / "src/main/AndroidManifest.xml"
+    manifest_text = read_text(manifest)
+    if not manifest_text:
+        return None
+    package_match = re.search(r"(<manifest\b[^>]*?)\s+package\s*=\s*([\"'])([A-Za-z][A-Za-z0-9_.]+)\2", manifest_text, re.I | re.S)
+    if not package_match:
+        return None
+    namespace = package_match.group(3)
+    gradle_text = read_text(gradle)
+    changes: list[str] = []
+    if not re.search(r"(?m)^\s*namespace\s*(?:=\s*)?[\"']", gradle_text):
+        marker = re.search(r"(?m)^\s*android\s*\{\s*$", gradle_text)
+        if not marker:
+            return None
+        indent_match = re.match(r"\s*", marker.group(0))
+        indent = (indent_match.group(0) if indent_match else "") + "    "
+        syntax = f'{indent}namespace = "{namespace}"\n' if gradle.suffix == ".kts" else f'{indent}namespace "{namespace}"\n'
+        gradle_text = gradle_text[:marker.end()] + "\n" + syntax + gradle_text[marker.end():]
+        gradle.write_text(gradle_text, encoding="utf-8")
+        changes.append("namespace_added")
+    updated_manifest = manifest_text[:package_match.start()] + package_match.group(1) + manifest_text[package_match.end():]
+    manifest.write_text(updated_manifest, encoding="utf-8")
+    changes.append("manifest_package_removed")
+    return {
+        "rule": "android_manifest_package_namespace_migration",
+        "file": str(manifest.relative_to(project)),
+        "gradle_file": str(gradle.relative_to(project)),
+        "before": f'package="{namespace}" in source AndroidManifest.xml',
+        "after": f'namespace = "{namespace}" in module Gradle; manifest package removed',
+        "changes": changes,
+        "workspace_only": True,
+    }
 
 
 def update_numeric_property(text: str, names: tuple[str, ...], value: int) -> tuple[str, str | None]:
@@ -98,7 +175,7 @@ def update_numeric_property(text: str, names: tuple[str, ...], value: int) -> tu
     return text, None
 
 
-def update_min_sdk(project: Path, log: str) -> dict | None:
+def update_min_sdk(project: Path, log: str, preflight: dict | None = None) -> dict | None:
     matches = re.findall(r"minSdkVersion\s+\d+\s+cannot be smaller than version\s+(\d+)", log, re.I)
     if not matches:
         matches = re.findall(r"uses-sdk:minSdkVersion\s+['\"]?(\d+)['\"]?.*?smaller than version\s+['\"]?(\d+)", log, re.I | re.S)
@@ -107,7 +184,7 @@ def update_min_sdk(project: Path, log: str) -> dict | None:
         required = max(map(int, matches))
     if not required:
         return None
-    path = app_gradle(project)
+    path = app_gradle(project, preflight)
     if not path:
         return None
     text = read_text(path)
@@ -118,13 +195,13 @@ def update_min_sdk(project: Path, log: str) -> dict | None:
     return {"rule": "android_min_sdk_requirement", "file": str(path.relative_to(project)), "before": before, "after": f"minSdk = {required}"}
 
 
-def update_compile_sdk(project: Path, log: str) -> dict | None:
+def update_compile_sdk(project: Path, log: str, preflight: dict | None = None) -> dict | None:
     versions = [int(value) for value in re.findall(r"compile against version\s+(\d+)\s+or later", log, re.I)]
     versions += [int(value) for value in re.findall(r"requires compileSdk(?:Version)?\s*(?:>=|of at least)?\s*(\d+)", log, re.I)]
     if not versions:
         return None
     required = max(versions)
-    path = app_gradle(project)
+    path = app_gradle(project, preflight)
     if not path:
         return None
     text = read_text(path)
@@ -135,10 +212,13 @@ def update_compile_sdk(project: Path, log: str) -> dict | None:
     return {"rule": "android_compile_sdk_requirement", "file": str(path.relative_to(project)), "before": before, "after": f"compileSdk = {required}"}
 
 
-def add_exported(project: Path, log: str) -> dict | None:
+def add_exported(project: Path, log: str, preflight: dict | None = None) -> dict | None:
     if not re.search(r"android:exported needs to be explicitly specified", log, re.I):
         return None
-    path = project / "android/app/src/main/AndroidManifest.xml"
+    module = app_module_dir(project, preflight)
+    if not module:
+        return None
+    path = module / "src/main/AndroidManifest.xml"
     text = read_text(path)
     if not text:
         return None
@@ -156,12 +236,12 @@ def add_exported(project: Path, log: str) -> dict | None:
     return None
 
 
-def align_jvm_targets(project: Path, log: str) -> dict | None:
+def align_jvm_targets(project: Path, log: str, preflight: dict | None = None) -> dict | None:
     match = re.search(r"Inconsistent JVM-target compatibility.*?\((\d+)\).*?\((\d+)\)", log, re.I | re.S)
     if not match:
         return None
     target = max(int(match.group(1)), int(match.group(2)))
-    path = app_gradle(project)
+    path = app_gradle(project, preflight)
     if not path:
         return None
     text = read_text(path)
@@ -181,20 +261,22 @@ def main() -> int:
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--build-label", required=True)
+    parser.add_argument("--preflight", type=Path)
     args = parser.parse_args()
     project = args.project.resolve(strict=True)
     log = args.log.read_text(encoding="utf-8", errors="replace")
     report = load_report(args.output)
+    preflight = load_preflight(args.preflight)
     if any(item.get("build_label") == args.build_label for item in report["attempts"]):
         print(json.dumps({"applied_count": 0, "retry_recommended": False, "reason": "already_attempted"}))
         return 0
 
     attempt = {"build_label": args.build_label, "applied_count": 0, "rules_checked": [], "skipped": []}
-    fixers = (insert_namespace, update_min_sdk, update_compile_sdk, add_exported, align_jvm_targets)
+    fixers = (migrate_manifest_package, insert_namespace, update_min_sdk, update_compile_sdk, add_exported, align_jvm_targets)
     for fixer in fixers:
         attempt["rules_checked"].append(fixer.__name__)
         try:
-            applied = fixer(project, log)
+            applied = fixer(project, log, preflight)
         except Exception as exc:  # Keep one bad migration from hiding the original build failure.
             attempt["skipped"].append({"rule": fixer.__name__, "reason": type(exc).__name__})
             continue
