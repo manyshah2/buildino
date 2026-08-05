@@ -10,6 +10,8 @@ import secrets
 import subprocess
 from pathlib import Path
 
+from android_java_runtime import detect_agp_version, gradle_wrapper_version, required_java_runtime
+
 
 def read_text(path: Path) -> str:
     try:
@@ -19,33 +21,26 @@ def read_text(path: Path) -> str:
 
 
 def gradle_version(project: Path) -> tuple[int, int]:
-    text = read_text(project / "android/gradle/wrapper/gradle-wrapper.properties")
-    match = re.search(r"gradle-(\d+)\.(\d+)", text)
-    return (int(match.group(1)), int(match.group(2))) if match else (8, 0)
+    value = gradle_wrapper_version(project / "android")
+    if not value:
+        return (8, 0)
+    parts = [int(part) for part in re.findall(r"\d+", value)[:2]]
+    return tuple((parts + [0, 0])[:2])  # type: ignore[return-value]
 
 
-def required_java(project: Path) -> int:
+def required_java(project: Path) -> tuple[int, str | None, str | None]:
+    android = project / "android"
     texts = []
-    for pattern in ("android/**/*.gradle", "android/**/*.gradle.kts"):
-        texts.extend(read_text(path) for path in project.glob(pattern))
-    joined = "\n".join(texts)
-    for version in (21, 17, 11):
-        patterns = (
-            rf"VERSION_{version}\b",
-            rf"jvmTarget\s*=\s*['\"]{version}['\"]",
-            rf"jvmToolchain\s*\(\s*{version}\s*\)",
-            rf"JavaLanguageVersion\.of\s*\(\s*{version}\s*\)",
+    for pattern in ("**/*.gradle", "**/*.gradle.kts"):
+        texts.extend(
+            read_text(path)
+            for path in android.glob(pattern)
+            if not any(part in {".gradle", "build", ".git", "node_modules"} for part in path.relative_to(android).parts)
         )
-        if any(re.search(pattern, joined) for pattern in patterns):
-            return version
-    major, minor = gradle_version(project)
-    # Runtime compatibility for older Android projects. Source/target compatibility
-    # set to 1.8 does not itself force JDK 8, so only the Gradle wrapper drives this.
-    if (major, minor) < (5, 0):
-        return 8
-    if (major, minor) < (7, 3):
-        return 11
-    return 17
+    joined = "\n".join(texts)
+    wrapper = gradle_wrapper_version(android)
+    agp = detect_agp_version(android)
+    return required_java_runtime(wrapper, agp, joined), wrapper, agp
 
 
 def balanced_block(text: str, keyword: str) -> str:
@@ -241,7 +236,7 @@ def main() -> int:
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     project = args.project.resolve()
-    java_version = required_java(project)
+    java_version, wrapper_version, agp_version = required_java(project)
     java_home = os.environ.get(f"JAVA_HOME_{java_version}_X64", "") or os.environ.get("JAVA_HOME", "")
     if not java_home:
         raise SystemExit(f"JAVA_HOME for Java {java_version} is unavailable")
@@ -255,7 +250,8 @@ def main() -> int:
     data = {
         "java_version": java_version,
         "java_home": java_home,
-        "gradle_version": ".".join(map(str, gradle_version(project))),
+        "gradle_version": wrapper_version or ".".join(map(str, gradle_version(project))),
+        "agp_version": agp_version,
         "flavors": detect_flavors(project),
         "entrypoints": detect_entrypoints(project),
         "fallback_signing_used": fallback,
