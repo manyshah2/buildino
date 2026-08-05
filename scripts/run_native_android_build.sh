@@ -104,6 +104,24 @@ is_transient_log() {
   grep -Eiq 'UnknownHostException|Connection reset|Read timed out|Could not GET|Could not HEAD|Temporary failure|timed out|HTTP 5[0-9][0-9]|503 Service Unavailable|429 Too Many Requests' "$1"
 }
 
+java_required_by_log() {
+  python3 scripts/android_java_runtime.py required-from-log "$1" 2>/dev/null || true
+}
+
+activate_java_runtime() {
+  local required="$1" reason="$2" var home
+  var="JAVA_HOME_${required}_X64"
+  home="${!var:-}"
+  [ -n "$home" ] || return 1
+  python3 scripts/android_java_runtime.py apply handoff/preflight.json "$required" --reason "$reason" \
+    > "handoff/logs/java-runtime-switch-${required}.json"
+  java_version="$required"
+  java_home="$home"
+  export JAVA_HOME="$java_home"
+  export PATH="$JAVA_HOME/bin:$PATH"
+  java -version 2>&1 | tee -a "handoff/logs/java-selected.log"
+}
+
 run_gradle_retry() {
   local label="$1"; shift
   local rc=1
@@ -114,6 +132,14 @@ run_gradle_retry() {
     rc=${PIPESTATUS[0]}
     set -e
     [ "$rc" -eq 0 ] && return 0
+    required_java="$(java_required_by_log "$log")"
+    if [ "$attempt" -lt 3 ] && [ -n "$required_java" ] && [ "${java_version:-0}" -lt "$required_java" ]; then
+      if activate_java_runtime "$required_java" "Gradle requested Java ${required_java} while running ${label}"; then
+        failure_stage="${label//-/_}_java_${required_java}_retry"
+        sleep 2
+        continue
+      fi
+    fi
     if [ "$attempt" -lt 3 ] && is_transient_log "$log"; then
       sleep $((attempt * 10))
     else
