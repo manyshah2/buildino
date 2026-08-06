@@ -7,7 +7,7 @@ case "$BUILD_TARGET" in apk|aab|both) ;; *) exit 2;; esac
 rm -rf handoff work
 mkdir -p handoff/result handoff/logs work/project
 status=failure;failure_stage=initialization;failure_kind=infrastructure;failure_code=1
-project_dir="";fallback_signing_used=false;java_version="";flavors_json='[]';package_manager=""
+project_dir="";fallback_signing_used=false;java_version="";flavors_json='[]';package_manager="";LAST_GRADLE_LOG=""
 write_status(){ STATUS="$status" FAILURE_STAGE="$failure_stage" FAILURE_KIND="$failure_kind" FAILURE_CODE="$failure_code" PROJECT_DIR="$project_dir" REQUEST_ID="$REQUEST_ID" BUILD_TARGET="$BUILD_TARGET" FALLBACK_SIGNING_USED="$fallback_signing_used" JAVA_VERSION="$java_version" FLAVORS_JSON="$flavors_json" PACKAGE_MANAGER="$package_manager" python3 - <<'PY'
 import hashlib,json,os
 from pathlib import Path
@@ -15,20 +15,24 @@ outputs=[]
 for p in sorted(Path('handoff/result').glob('*')):
  if p.is_file() and p.suffix in {'.apk','.aab'}: outputs.append({'type':p.suffix[1:],'name':p.name,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size})
 data={'status':os.environ['STATUS'],'failure_stage':os.environ['FAILURE_STAGE'],'failure_kind':os.environ['FAILURE_KIND'],'failure_code':int(os.environ['FAILURE_CODE']),'project_dir':os.environ['PROJECT_DIR'],'request_id':os.environ['REQUEST_ID'],'target':os.environ['BUILD_TARGET'],'outputs':outputs,'framework':'react_native','package_manager':os.environ.get('PACKAGE_MANAGER'),'fallback_signing_used':os.environ.get('FALLBACK_SIGNING_USED')=='true','java_version':os.environ.get('JAVA_VERSION') or None,'flavors':json.loads(os.environ.get('FLAVORS_JSON','[]'))}
-for key,name in [('framework_detection','framework-detection.json'),('project_discovery','project-discovery.json'),('preflight','preflight.json'),('gradle_java_home_fixes','gradle-java-home-fixes.json'),('error_report','error-report.json')]:
+for key,name in [('framework_detection','framework-detection.json'),('project_discovery','project-discovery.json'),('preflight','preflight.json'),('gradle_java_home_fixes','gradle-java-home-fixes.json'),('adaptive_fixes','adaptive-fixes.json'),('error_report','error-report.json')]:
  p=Path('handoff')/name
  if p.is_file():
   try:data[key]=json.loads(p.read_text())
   except:pass
+adaptive=data.get('adaptive_fixes')
+if isinstance(adaptive,dict):
+ data['auto_fixes']=adaptive.get('applied',[])
+ data['auto_fix_attempts']=adaptive.get('attempts',[])
 Path('handoff/status.json').write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
 PY
 }
-create_error(){ local args=(--stage "$failure_stage" --code "$failure_code" --output handoff/error-report.json); [ -s handoff/preflight.json ]&&args+=(--preflight handoff/preflight.json); [ -s handoff/project-discovery.json ]&&args+=(--project-discovery handoff/project-discovery.json); for f in handoff/logs/*.log;do [ -f "$f" ]&&args+=(--log "$f");done; python3 scripts/analyze_build_error.py "${args[@]}"||true; }
+create_error(){ local args=(--stage "$failure_stage" --code "$failure_code" --output handoff/error-report.json); [ -s handoff/preflight.json ]&&args+=(--preflight handoff/preflight.json); [ -s handoff/project-discovery.json ]&&args+=(--project-discovery handoff/project-discovery.json); [ -s handoff/adaptive-fixes.json ]&&args+=(--adaptive-fixes handoff/adaptive-fixes.json); for f in handoff/logs/*.log;do [ -f "$f" ]&&args+=(--log "$f");done; python3 scripts/analyze_build_error.py "${args[@]}"||true; }
 on_exit(){ rc=$?;trap - EXIT;if [ "$status" != success ];then [ "$failure_code" -le 1 ]&&failure_code=$rc;[ "$failure_code" -eq 0 ]&&failure_code=1;create_error;fi;write_status;rm -rf work/project;[ "$status" = success ]&&exit 0;exit "$failure_code";};trap on_exit EXIT
 transient(){ grep -Eiq 'ENOTFOUND|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UnknownHostException|Connection reset|Read timed out|Could not GET|Could not HEAD|HTTP 5[0-9][0-9]|429 Too Many Requests' "$1"; }
 java_required_by_log(){ python3 scripts/android_java_runtime.py required-from-log "$1" 2>/dev/null||true; }
 activate_java_runtime(){ local required="$1" reason="$2" var home;var="JAVA_HOME_${required}_X64";home="${!var:-}";[ -n "$home" ]||return 1;python3 scripts/android_java_runtime.py apply handoff/preflight.json "$required" --reason "$reason" >"handoff/logs/java-runtime-switch-${required}.json";java_version="$required";java_home="$home";export JAVA_HOME="$java_home";export PATH="$JAVA_HOME/bin:$PATH";java -version 2>&1|tee -a handoff/logs/java-selected.log; }
-retry_cmd(){ local label="$1";shift;local rc=1 required_java;for a in 1 2 3;do local log="handoff/logs/${label}-attempt${a}.log";set +e;(cd "$project_dir"&&"$@") 2>&1|tee "$log";rc=${PIPESTATUS[0]};set -e;[ $rc -eq 0 ]&&return 0;required_java="$(java_required_by_log "$log")";if [ $a -lt 3 ]&&[ -n "$required_java" ]&&[ "${java_version:-0}" -lt "$required_java" ]&&activate_java_runtime "$required_java" "React Native Gradle requested Java ${required_java}";then sleep 2;continue;fi;if [ $a -lt 3 ]&&transient "$log";then sleep $((a*8));else return $rc;fi;done;return $rc; }
+retry_cmd(){ local label="$1";shift;local rc=1 required_java;for a in 1 2 3;do local log="handoff/logs/${label}-attempt${a}.log";LAST_GRADLE_LOG="$log";set +e;(cd "$project_dir"&&"$@") 2>&1|tee "$log";rc=${PIPESTATUS[0]};set -e;[ $rc -eq 0 ]&&return 0;required_java="$(java_required_by_log "$log")";if [ $a -lt 3 ]&&[ -n "$required_java" ]&&[ "${java_version:-0}" -lt "$required_java" ]&&activate_java_runtime "$required_java" "React Native Gradle requested Java ${required_java}";then sleep 2;continue;fi;if [ $a -lt 3 ]&&transient "$log";then sleep $((a*8));else return $rc;fi;done;return $rc; }
 failure_stage=source_validation;failure_kind=user;failure_code=3;python3 scripts/validate_zip.py "$SOURCE_ZIP" 2>&1|tee handoff/logs/source-validation.log
 failure_stage=source_extract;failure_code=4;python3 scripts/prepare_source.py "$SOURCE_ZIP" work/project 2>&1|tee handoff/logs/source-extract.log
 failure_stage=source_discovery;failure_code=5;project_dir="$(python3 scripts/find_android_project.py work/project --framework react_native --report handoff/project-discovery.json 2>&1|tee handoff/logs/project-discovery.log|tail -n1)";test -f "$project_dir/package.json"
@@ -54,7 +58,25 @@ failure_stage=project_preflight;failure_kind=user;failure_code=13;python3 script
 java_version="$(python3 -c 'import json;print(json.load(open("handoff/preflight.json"))["java_version"])')";java_home="$(python3 -c 'import json;print(json.load(open("handoff/preflight.json"))["java_home"])')";fallback_signing_used="$(python3 -c 'import json;print(str(json.load(open("handoff/preflight.json"))["fallback_signing_used"]).lower())')";flavors_json="$(python3 -c 'import json;print(json.dumps(json.load(open("handoff/preflight.json"))["flavors"],separators=(",",":")))')";export JAVA_HOME="$java_home";export PATH="$JAVA_HOME/bin:$PATH"
 chmod +x "$project_dir/android/gradlew"
 mapfile -t flavors < <(python3 -c 'import json;print("\n".join(json.load(open("handoff/preflight.json"))["flavors"]))');[ ${#flavors[@]} -gt 0 ]||flavors=("")
-build_one(){ local type="$1" flavor="$2" task cap out;cap="${flavor^}";if [ "$type" = apk ];then task="assemble${cap}Release";else task="bundle${cap}Release";fi;failure_stage="react_native_gradle_${type}${flavor:+_}${flavor}";failure_code=20;retry_cmd "rn-${task}" ./android/gradlew -p android "$task" --no-daemon --stacktrace||{ failure_code=$?;return "$failure_code"; };if [ "$type" = apk ];then out="$(find "$project_dir/android/app/build/outputs/apk" -type f -iname '*release*.apk' -size +0c|{ [ -n "$flavor" ]&&grep -i "$flavor"||cat; }|sort|tail -n1)";else out="$(find "$project_dir/android/app/build/outputs/bundle" -type f -iname '*release*.aab' -size +0c|{ [ -n "$flavor" ]&&grep -i "$flavor"||cat; }|sort|tail -n1)";fi;[ -s "$out" ]||{ failure_stage="${type}_output_missing";failure_code=30;return 30;};cp "$out" "handoff/result/${REQUEST_ID}${flavor:+-$flavor}.${type}"; }
+build_one(){
+ local type="$1" flavor="$2" task cap out rc round summary count label
+ cap="${flavor^}"
+ if [ "$type" = apk ];then task="assemble${cap}Release";else task="bundle${cap}Release";fi
+ for round in 0 1 2 3 4 5;do
+  label="rn-${task}-round${round}"
+  failure_stage="react_native_gradle_${type}${flavor:+_}${flavor}_round${round}";failure_code=20
+  if retry_cmd "$label" ./android/gradlew -p android "$task" --no-daemon --stacktrace;then rc=0;break;else rc=$?;fi
+  [ "$round" -lt 5 ]||return "$rc"
+  summary="$(python3 scripts/apply_adaptive_project_fixes.py --project "$project_dir" --preflight handoff/preflight.json --log "$LAST_GRADLE_LOG" --output handoff/adaptive-fixes.json --build-label "rn-${task}-fix$((round+1))" 2>&1||true)"
+  printf '%s\n' "$summary"|tee "handoff/logs/rn-${task}-autofix-$((round+1)).log"
+  count="$(python3 -c 'import json,sys;print(int(json.loads(sys.argv[1]).get("applied_count",0)))' "$summary" 2>/dev/null||echo 0)"
+  [ "$count" -gt 0 ]||return "$rc"
+ done
+ [ "${rc:-1}" -eq 0 ]||return "${rc:-1}"
+ if [ "$type" = apk ];then out="$(find "$project_dir/android/app/build/outputs/apk" -type f -iname '*release*.apk' -size +0c|{ [ -n "$flavor" ]&&grep -i "$flavor"||cat; }|sort|tail -n1)";else out="$(find "$project_dir/android/app/build/outputs/bundle" -type f -iname '*release*.aab' -size +0c|{ [ -n "$flavor" ]&&grep -i "$flavor"||cat; }|sort|tail -n1)";fi
+ [ -s "$out" ]||{ failure_stage="${type}_output_missing";failure_code=30;return 30;}
+ cp "$out" "handoff/result/${REQUEST_ID}${flavor:+-$flavor}.${type}"
+}
 if [ "$BUILD_TARGET" = apk ]||[ "$BUILD_TARGET" = both ];then for f in "${flavors[@]}";do build_one apk "$f"||exit $?;done;fi
 if [ "$BUILD_TARGET" = aab ]||[ "$BUILD_TARGET" = both ];then for f in "${flavors[@]}";do build_one aab "$f"||exit $?;done;fi
 status=success;failure_stage=none;failure_kind=none;failure_code=0;write_status

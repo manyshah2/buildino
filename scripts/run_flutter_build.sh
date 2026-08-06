@@ -256,27 +256,31 @@ PY
   fi
 
   if [ "$rc" -ne 0 ]; then
-    failure_stage="flutter_autofix_${label//-/_}"; failure_kind="user"; failure_code="$rc"
-    local theme_summary adaptive_summary theme_count adaptive_count total_fixes
-    theme_summary="$(python3 scripts/apply_flutter_compat_fixes.py \
-      --project "$project_dir" --log "$log" --output handoff/auto-fixes.json \
-      --build-label "$label" 2>&1 || true)"
-    adaptive_summary="$(python3 scripts/apply_adaptive_project_fixes.py \
-      --project "$project_dir" --log "$log" --output handoff/adaptive-fixes.json \
-      --build-label "$label" 2>&1 || true)"
-    printf '%s\n%s\n' "$theme_summary" "$adaptive_summary" | tee "handoff/logs/flutter-autofix-${label}.log"
-    theme_count="$(python3 -c 'import json,sys; print(int(json.loads(sys.argv[1]).get("applied_count",0)))' "$theme_summary" 2>/dev/null || echo 0)"
-    adaptive_count="$(python3 -c 'import json,sys; print(int(json.loads(sys.argv[1]).get("applied_count",0)))' "$adaptive_summary" 2>/dev/null || echo 0)"
-    total_fixes=$((theme_count + adaptive_count))
-    if [ "$total_fixes" -gt 0 ]; then
+    local theme_summary adaptive_summary theme_count adaptive_count total_fixes fix_round fix_label
+    for fix_round in 1 2 3 4 5; do
+      failure_stage="flutter_autofix_${label//-/_}_${fix_round}"; failure_kind="user"; failure_code="$rc"
+      fix_label="${label}-round${fix_round}"
+      theme_summary="$(python3 scripts/apply_flutter_compat_fixes.py \
+        --project "$project_dir" --log "$log" --output handoff/auto-fixes.json \
+        --build-label "$fix_label" 2>&1 || true)"
+      adaptive_summary="$(python3 scripts/apply_adaptive_project_fixes.py \
+        --project "$project_dir" --log "$log" --output handoff/adaptive-fixes.json \
+        --build-label "$fix_label" 2>&1 || true)"
+      printf '%s\n%s\n' "$theme_summary" "$adaptive_summary" | tee "handoff/logs/flutter-autofix-${label}-round${fix_round}.log"
+      theme_count="$(python3 -c 'import json,sys; print(int(json.loads(sys.argv[1]).get("applied_count",0)))' "$theme_summary" 2>/dev/null || echo 0)"
+      adaptive_count="$(python3 -c 'import json,sys; print(int(json.loads(sys.argv[1]).get("applied_count",0)))' "$adaptive_summary" 2>/dev/null || echo 0)"
+      total_fixes=$((theme_count + adaptive_count))
+      [ "$total_fixes" -gt 0 ] || break
+
       attempt=$((attempt + 1))
-      failure_stage="flutter_build_${label//-/_}_after_adaptive_fix"; failure_code=20
-      log="handoff/logs/flutter-build-${label}-attempt${attempt}-autofix.log"
+      failure_stage="flutter_build_${label//-/_}_after_adaptive_fix_${fix_round}"; failure_code=20
+      log="handoff/logs/flutter-build-${label}-attempt${attempt}-autofix${fix_round}.log"
       set +e
       (cd "$project_dir" && "${cmd[@]}") 2>&1 | tee "$log"
       rc=${PIPESTATUS[0]}
       set -e
-    fi
+      [ "$rc" -eq 0 ] && break
+    done
   fi
 
   if [ "$rc" -ne 0 ]; then

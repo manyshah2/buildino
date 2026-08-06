@@ -298,6 +298,105 @@ def add_targeted_lint_disable(path: Path, lint_id: str) -> bool:
     return True
 
 
+
+def disable_missing_release_signing(project: Path, log: str, preflight: dict | None = None) -> dict | None:
+    """Detach a missing source keystore so the isolated publication job can apply fallback signing."""
+    patterns = (
+        r"signingConfigData\.storeFile specifies file:.*?which doesn[’']t exist",
+        r"Keystore file ['\"]?.+?['\"]? not found",
+        r"storeFile.*?(?:does not exist|doesn[’']t exist|not found)",
+        r"File .*?\.(?:jks|keystore).*?(?:does not exist|doesn[’']t exist|not found)",
+    )
+    if not any(re.search(pattern, log, re.I | re.S) for pattern in patterns):
+        return None
+    path = app_gradle(project, preflight)
+    if not path:
+        return None
+    text = read_text(path)
+    marker = "Buildino workspace-only missing-keystore override"
+    if marker in text:
+        return None
+    if path.suffix == ".kts":
+        override = (
+            "\n\n// " + marker + "\n"
+            "android {\n"
+            "    buildTypes {\n"
+            "        getByName(\"release\") {\n"
+            "            signingConfig = null\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+    else:
+        override = (
+            "\n\n// " + marker + "\n"
+            "android {\n"
+            "    buildTypes {\n"
+            "        release {\n"
+            "            signingConfig null\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+    path.write_text(text.rstrip() + override, encoding="utf-8")
+    missing = None
+    match = re.search(r"signingConfigData\.storeFile specifies file:\s*(.+?)\s*(?:which doesn[’']t exist|$)", log, re.I | re.S)
+    if match:
+        missing = match.group(1).strip().splitlines()[0][:240]
+    return {
+        "rule": "android_missing_release_keystore",
+        "file": str(path.relative_to(project)),
+        "before": f"missing Release keystore: {missing or 'configured storeFile'}",
+        "after": "release signingConfig detached; isolated fallback signing remains enabled",
+        "workspace_only": True,
+        "source_modified": False,
+    }
+
+
+def upgrade_ksp_headless_npe(project: Path, log: str, preflight: dict | None = None) -> dict | None:
+    """Upgrade only the exact KSP 2.3.5 headless crash when a KSP task itself failed."""
+    known_npe = re.search(
+        r"ksp\.com\.intellij.*?ApplicationManager\.getApplication\(\).*?is null",
+        log,
+        re.I | re.S,
+    )
+    failed_ksp_task = re.search(
+        r"(?:Execution failed for task|Task)\s+['\"]?[^\n'\"]*ksp[^\n'\"]*['\"]?.*?(?:FAILED|failed)",
+        log,
+        re.I | re.S,
+    )
+    if not known_npe or not failed_ksp_task:
+        return None
+    skip = {".git", ".gradle", "build", "node_modules", ".dart_tool"}
+    candidates: list[Path] = []
+    for pattern in ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "libs.versions.toml"):
+        for path in project.rglob(pattern):
+            try:
+                rel = path.relative_to(project)
+            except ValueError:
+                continue
+            if any(part in skip for part in rel.parts):
+                continue
+            candidates.append(path)
+    changed_files: list[str] = []
+    exact = re.compile(r"(?<![0-9.])2\.3\.5(?![0-9.])")
+    for path in sorted(set(candidates))[:120]:
+        original = read_text(path)
+        updated, count = exact.subn("2.3.6", original)
+        if count and updated != original:
+            path.write_text(updated, encoding="utf-8")
+            changed_files.append(str(path.relative_to(project)))
+    if not changed_files:
+        return None
+    return {
+        "rule": "android_ksp_235_headless_npe",
+        "file": changed_files[0],
+        "files": changed_files,
+        "before": "KSP 2.3.5 headless IntelliJ ApplicationManager NPE",
+        "after": "KSP 2.3.6",
+        "workspace_only": True,
+    }
+
 def add_appcompat_for_missing_theme(project: Path, log: str, preflight: dict | None = None) -> dict | None:
     if not re.search(r"Theme\.AppCompat(?:\.[A-Za-z0-9_]+)*.*(?:not found|resource.*not found)|resource style/Theme\.AppCompat", log, re.I | re.S):
         return None
@@ -356,7 +455,7 @@ def main() -> int:
         return 0
 
     attempt = {"build_label": args.build_label, "applied_count": 0, "rules_checked": [], "skipped": []}
-    fixers = (add_appcompat_for_missing_theme, upgrade_fragment_for_activity_result, migrate_manifest_package, insert_namespace, update_min_sdk, update_compile_sdk, add_exported, align_jvm_targets)
+    fixers = (disable_missing_release_signing, upgrade_ksp_headless_npe, add_appcompat_for_missing_theme, upgrade_fragment_for_activity_result, migrate_manifest_package, insert_namespace, update_min_sdk, update_compile_sdk, add_exported, align_jvm_targets)
     for fixer in fixers:
         attempt["rules_checked"].append(fixer.__name__)
         try:

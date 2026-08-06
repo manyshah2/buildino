@@ -324,31 +324,38 @@ copy_outputs() {
 }
 
 build_one() {
-  local type="$1" task rc
+  local type="$1" task rc round adaptive_summary adaptive_count label
   if [ "$type" = "apk" ]; then task="${prefix}assembleRelease"; else task="${prefix}bundleRelease"; fi
-  failure_stage="native_android_${type}_build"; failure_kind="user"; failure_code=20
-  if run_gradle_retry "native-${type}" "$task"; then
-    :
-  else
+  failure_kind="user"; failure_code=20
+
+  for round in 0 1 2 3 4 5; do
+    if [ "$round" -eq 0 ]; then
+      label="native-${type}"
+      failure_stage="native_android_${type}_build"
+    else
+      label="native-${type}-autofix${round}"
+      failure_stage="native_android_${type}_after_adaptive_fix_${round}"
+    fi
+
+    if run_gradle_retry "$label" "$task"; then
+      failure_stage="${type}_output_collect"; failure_code=30
+      copy_outputs "$type" || return 30
+      return 0
+    fi
     rc=$?
-    failure_stage="native_android_${type}_autofix"; failure_code="$rc"
-    local adaptive_summary adaptive_count
+    failure_code="$rc"
+
+    [ "$round" -lt 5 ] || return "$rc"
+    failure_stage="native_android_${type}_autofix_$((round + 1))"
     adaptive_summary="$(python3 scripts/apply_adaptive_project_fixes.py \
       --project "$project_dir" --preflight handoff/preflight.json \
       --log "$LAST_GRADLE_LOG" --output handoff/adaptive-fixes.json \
-      --build-label "native-${type}" 2>&1 || true)"
-    printf '%s\n' "$adaptive_summary" | tee "handoff/logs/native-${type}-autofix.log"
+      --build-label "native-${type}-round$((round + 1))" 2>&1 || true)"
+    printf '%s\n' "$adaptive_summary" | tee "handoff/logs/native-${type}-autofix-round$((round + 1)).log"
     adaptive_count="$(python3 -c 'import json,sys; print(int(json.loads(sys.argv[1]).get("applied_count",0)))' "$adaptive_summary" 2>/dev/null || echo 0)"
-    if [ "$adaptive_count" -gt 0 ]; then
-      failure_stage="native_android_${type}_after_adaptive_fix"; failure_code=20
-      run_gradle_retry "native-${type}-autofix" "$task" || { rc=$?; failure_code="$rc"; return "$rc"; }
-    else
-      failure_code="$rc"
-      return "$rc"
-    fi
-  fi
-  failure_stage="${type}_output_collect"; failure_code=30
-  copy_outputs "$type" || return 30
+    [ "$adaptive_count" -gt 0 ] || return "$rc"
+  done
+  return "${rc:-20}"
 }
 
 if [ "$BUILD_TARGET" = "apk" ] || [ "$BUILD_TARGET" = "both" ]; then build_one apk || exit $?; fi

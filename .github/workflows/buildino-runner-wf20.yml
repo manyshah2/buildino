@@ -1,6 +1,6 @@
-name: Buildino Runner WF-19
+name: Buildino Runner WF-20
 
-run-name: "Buildino WF-19 • ${{ inputs.build_target }} • ${{ inputs.request_id }}"
+run-name: "Buildino WF-20 • ${{ inputs.build_target }} • ${{ inputs.request_id }}"
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: buildino-runner-wf19-${{ inputs.request_id }}
+  group: buildino-runner-wf20-${{ inputs.request_id }}
   cancel-in-progress: false
 
 env:
@@ -78,7 +78,7 @@ jobs:
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
           set -Eeuo pipefail
-          echo "handoff_cache_key=buildino-handoff-wf19-${GITHUB_RUN_ID}-${REQUEST_ID}" >> "$GITHUB_OUTPUT"
+          echo "handoff_cache_key=buildino-handoff-wf20-${GITHUB_RUN_ID}-${REQUEST_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Download source through authenticated Worker stream
         id: source_intake
@@ -478,7 +478,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: handoff
-          key: buildino-handoff-wf19-${{ github.run_id }}-${{ inputs.request_id }}
+          key: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
 
   ios_build:
     name: Authenticated Flutter iOS IPA build on macOS
@@ -660,7 +660,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: handoff
-          key: buildino-handoff-wf19-${{ github.run_id }}-${{ inputs.request_id }}
+          key: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
 
   publish:
     name: Trusted temporary Release publication
@@ -680,7 +680,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: handoff
-          key: buildino-handoff-wf19-${{ github.run_id }}-${{ inputs.request_id }}
+          key: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
           fail-on-cache-miss: false
 
       - name: Ensure publish handoff exists
@@ -911,6 +911,8 @@ jobs:
               "",
               f"علت: {report.get('cause','جزئیات فنی در Workflow ثبت شده است.')}",
               "",
+              f"نتیجه: {report.get('result','نیاز به بررسی اولین خطای واقعی Build دارد.')}",
+              "",
               f"راه‌حل: {report.get('solution','گزارش Workflow را بررسی کنید.')}",
           ]
           if report.get("fallback_signing_used"):
@@ -934,7 +936,7 @@ jobs:
               rendered=[]
               for fix in fixes[:8]:
                   rendered.append(f"• {fix.get('before','?')} → {fix.get('after','?')} در {fix.get('file','?')}:{fix.get('actual_line','?')}")
-              parts += ["", "اصلاحات خودکار اعمال‌شده پیش از تلاش دوم:", *rendered]
+              parts += ["", "اصلاحات خودکار اعمال‌شده پیش از تلاش‌های بعدی:", *rendered]
           if excerpt:
               parts += ["", "خلاصه فنی:", excerpt]
           print(json.dumps({
@@ -966,7 +968,7 @@ jobs:
           Path("result.json").write_text(json.dumps({
               "request_id": os.environ["REQUEST_ID"], "status": "failure",
               "conclusion": "failure",
-              "error_summary": "دسته خطا: سرویس امضای fallback بیلدینو\nمرحله: isolated_fallback_signing\n\nعلت: خروجی پروژه ساخته شد اما اعمال امضای اختصاصی بیلدینو ناموفق بود.\n\nراه‌حل: Secrets امضای fallback و سلامت Keystore را بررسی کنید.",
+              "error_summary": "دسته خطا: سرویس امضای fallback بیلدینو\nمرحله: isolated_fallback_signing\n\nعلت: خروجی پروژه ساخته شد اما اعمال امضای اختصاصی بیلدینو ناموفق بود.\n\nنتیجه: مشکل از سرویس انتشار و امضای بیلدینو است، نه از سورس کاربر.\n\nراه‌حل: Secrets امضای fallback و سلامت Keystore را بررسی کنید.",
               "error_category": "fallback_signing", "quota_action": "release", "assets": [],
           }, ensure_ascii=False, separators=(",",":")), encoding="utf-8")
           PY
@@ -1023,7 +1025,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          HANDOFF_KEY: buildino-handoff-wf19-${{ github.run_id }}-${{ inputs.request_id }}
+          HANDOFF_KEY: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
         run: |
           set -Eeuo pipefail
           encoded="$(python3 - "$HANDOFF_KEY" <<'PY'
@@ -1038,7 +1040,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Buildino Runner WF-19"
+            echo "## Buildino Runner WF-20"
             echo
             echo "- Request: ${{ inputs.request_id }}"
             echo "- Target: ${{ inputs.build_target }}"

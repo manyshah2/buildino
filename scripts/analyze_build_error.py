@@ -14,9 +14,21 @@ RULES = [
     ("android_platform_prepare", [r"Android platform remains incomplete", r"Flutter could not generate a complete Android platform", r"android_platform_prepare"],
      "آماده‌سازی پلتفرم Android", "پوشه Android وجود نداشت یا ناقص بود و تولید/ادغام خودکار آن کامل نشد.",
      "جزئیات Project Prepare را بررسی کنید؛ مسیر Overlay و خروجی هر روش flutter create در گزارش ثبت شده است."),
-    ("android_signing", [r"Missing android/key\.properties", r"keystore.*not found", r"signingConfig", r"Keystore was tampered"],
+    ("android_missing_keystore", [r"signingConfigData\.storeFile specifies file:.*?which doesn[’']t exist", r"Keystore file .*? not found", r"storeFile.*?(?:does not exist|doesn[’']t exist|not found)"],
+     "فایل Keystore نسخه Release پیدا نشد", "پروژه برای Build نسخه Release به یک فایل JKS/Keystore اشاره می‌کند که داخل سورس موجود نیست.",
+     "بیلدینو باید فقط در Workspace موقت signingConfig نامعتبر را جدا کند، خروجی بدون امضای سورس را بسازد و در مرحله انتشار با Keystore fallback خودش امضا کند."),
+    ("android_signing", [r"Missing android/key\.properties", r"Keystore was tampered", r"Failed to read key", r"SigningConfig .* missing required property", r"keyAlias.*(?:missing|invalid)"],
      "خطای امضای Android", "اطلاعات یا فایل امضای Release پروژه ناقص یا نامعتبر است.",
      "برای خروجی آزمایشی، بیلدینو از امضای fallback استفاده می‌کند. برای انتشار یا آپدیت اپ، Keystore اصلی همان برنامه لازم است."),
+    ("android_appcompat", [r"Theme\.AppCompat(?:\.[A-Za-z0-9_]+)*.*?(?:not found|resource.*not found)", r"resource style/Theme\.AppCompat"],
+     "وابستگی AppCompat مفقود است", "پروژه از Theme.AppCompat استفاده می‌کند اما کتابخانه androidx.appcompat در ماژول برنامه در دسترس نیست.",
+     "بیلدینو وابستگی سازگار AppCompat را فقط در Workspace موقت اضافه و Build را دوباره اجرا می‌کند."),
+    ("android_fragment_activity_result", [r"InvalidFragmentVersionForActivityResult", r"Upgrade Fragment version to at least\s+1\.3\.0"],
+     "نسخه Fragment برای Activity Result قدیمی است", "پروژه از Activity Result API استفاده می‌کند اما نسخه Fragment آن قدیمی‌تر از حداقل سازگار است.",
+     "بیلدینو نسخه Fragment را فقط در Workspace موقت ارتقا می‌دهد و در صورت نیاز فقط همان Lint ID را غیرفعال می‌کند."),
+    ("ksp_headless", [r"Execution failed for task.*ksp", r"Task .*ksp.*FAILED"],
+     "خطای KSP در محیط Headless", "Task مربوط به KSP در محیط خط فرمان متوقف شده است و ممکن است نسخه KSP با Kotlin یا اجرای Headless سازگار نباشد.",
+     "نسخه KSP را با Kotlin هماهنگ کنید؛ بیلدینو فقط برای خطای شناخته‌شده KSP 2.3.5 آن را در Workspace موقت به 2.3.6 ارتقا می‌دهد."),
     ("gradle_portability", [r"org\.gradle\.java\.home.*invalid", r"Java home supplied is invalid", r"version: unbound variable", r"gradle_fallback_setup"],
      "تنظیمات محلی Gradle", "پروژه یک مسیر Java مخصوص دستگاه سازنده داشت یا آماده‌سازی Gradle جایگزین کامل نشد.",
      "بیلدینو مسیر نامعتبر را فقط در Workspace موقت غیرفعال و Gradle سازگار را روی Runner آماده می‌کند."),
@@ -70,6 +82,23 @@ RULES = [
      "Cacheها و خروجی‌های اضافی را حذف یا مصرف حافظه Gradle را کاهش دهید؛ این خطا سهمیه کاربر را مصرف نمی‌کند."),
 ]
 
+RESULT_BY_CATEGORY = {
+    "source_structure": "ایراد اصلی از ساختار سورس است و بیلدینو پروژه قابل‌ساختی پیدا نکرده است.",
+    "android_platform_prepare": "مشکل از ناقص‌بودن بخش Android سورس است؛ بیلدینو تولید یا ادغام موقت را امتحان کرده اما کامل نشده است.",
+    "android_missing_keystore": "ایراد اصلی از تنظیمات امضای سورس است؛ بیلدینو باید آن را فقط در Workspace موقت دور بزند و خروجی را با امضای fallback آماده کند.",
+    "android_signing": "ایراد اصلی از اطلاعات امضای سورس است؛ در صورت امکان بیلدینو فقط برای خروجی آزمایشی از امضای fallback استفاده می‌کند.",
+    "android_appcompat": "ایراد اصلی از Dependency ناقص سورس است؛ این مورد باید توسط Auto-Fix موقت بیلدینو نیز قابل بازیابی باشد.",
+    "android_fragment_activity_result": "ایراد اصلی از نسخه قدیمی Dependency سورس است؛ بیلدینو باید آن را موقتاً ارتقا دهد.",
+    "ksp_headless": "ایراد از سازگاری KSP پروژه با محیط خط فرمان است؛ بیلدینو فقط الگوی شناخته‌شده و دقیق را موقتاً اصلاح می‌کند.",
+    "gradle_portability": "مشکل از تنظیمات محلی سورس یا آماده‌سازی Gradle روی Runner است؛ تغییر فقط در Workspace موقت انجام می‌شود.",
+    "gradle_minimum_version": "نسخه Gradle انتخاب‌شده پایین‌تر از نیاز AGP پروژه بوده و بیلدینو باید Runtime سازگار را جایگزین کند.",
+    "manifest_package_namespace": "ایراد از ساختار قدیمی سورس است و بیلدینو باید مهاجرت موقت Package به Namespace را انجام دهد.",
+    "dependency_network": "این خطا می‌تواند از شبکه Runner یا Repository وابستگی باشد و برای تشخیص نهایی باید اولین خطای Resolve بررسی شود.",
+    "resource": "ایراد اصلی از Resource یا Dependency سورس است؛ اگر الگوی شناخته‌شده باشد Auto-Fix موقت اجرا می‌شود.",
+    "disk_memory": "این خطا از منابع Runner است و نباید به‌عنوان ایراد سورس یا مصرف موفق سهمیه ثبت شود.",
+    "unknown": "علت قطعی هنوز از لاگ استخراج نشده و نیاز به بررسی اولین خطای واقعی Gradle دارد.",
+}
+
 SECRET_PATTERNS = [
     re.compile(r"(?i)(storePassword|keyPassword|password|token|secret|api[_-]?key)\s*[=:]\s*\S+"),
     re.compile(r"gh[oprsu]_[A-Za-z0-9_]{20,}"),
@@ -86,10 +115,19 @@ def sanitize(line: str) -> str:
 
 
 def select_excerpt(lines: list[str]) -> list[str]:
-    markers = ("FAILURE:", "* What went wrong:", "Error:", "Exception", "BUILD FAILED", "e: file://")
-    indices = [i for i, line in enumerate(lines) if any(marker.lower() in line.lower() for marker in markers)]
-    start = indices[0] if indices else max(0, len(lines) - 30)
-    candidates = lines[start:start + 26]
+    high_priority = ("* What went wrong:", "Execution failed for task", "FAILURE: Build failed", "BUILD FAILED")
+    high_indices = [i for i, line in enumerate(lines) if any(marker.lower() in line.lower() for marker in high_priority)]
+    if high_indices:
+        start = high_indices[0]
+        for index in high_indices:
+            if "* what went wrong:" in lines[index].lower():
+                start = index
+                break
+    else:
+        fallback = ("Error:", "Exception", "e: file://")
+        indices = [i for i, line in enumerate(lines) if any(marker.lower() in line.lower() for marker in fallback)]
+        start = indices[0] if indices else max(0, len(lines) - 30)
+    candidates = lines[start:start + 30]
     cleaned = [sanitize(line) for line in candidates if sanitize(line)]
     return cleaned[:18]
 
@@ -160,8 +198,8 @@ def main() -> int:
     if applied_fixes:
         solution = (
             solution
-            + " اصلاح سازگاری رسمی Flutter یک‌بار در Workspace موقت اعمال شد، "
-              "اما Build دوم با خطای نهایی بالا متوقف شد."
+            + " یک یا چند اصلاح سازگاری فقط در Workspace موقت اعمال شد، "
+              "اما آخرین تلاش با خطای نهایی بالا متوقف شد."
         )
     excerpt = select_excerpt(primary_text.splitlines())
     report = {
@@ -170,6 +208,7 @@ def main() -> int:
         "stage": args.stage,
         "exit_code": args.code,
         "cause": cause,
+        "result": RESULT_BY_CATEGORY.get(category, "ایراد اصلی از سورس یا محیط Build است و برای تعیین دقیق‌تر باید اولین خطای واقعی بررسی شود."),
         "solution": solution,
         "technical_excerpt": excerpt,
         "java_version": preflight.get("java_version"),
