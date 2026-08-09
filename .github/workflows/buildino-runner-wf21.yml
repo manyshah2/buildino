@@ -1,6 +1,6 @@
-name: Buildino Runner WF-20
+name: Buildino Runner WF-21
 
-run-name: "Buildino WF-20 • ${{ inputs.build_target }} • ${{ inputs.request_id }}"
+run-name: "Buildino WF-21 • ${{ inputs.build_target }} • ${{ inputs.request_id }}"
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: buildino-runner-wf20-${{ inputs.request_id }}
+  group: buildino-runner-wf21-${{ inputs.request_id }}
   cancel-in-progress: false
 
 env:
@@ -78,7 +78,7 @@ jobs:
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
           set -Eeuo pipefail
-          echo "handoff_cache_key=buildino-handoff-wf20-${GITHUB_RUN_ID}-${REQUEST_ID}" >> "$GITHUB_OUTPUT"
+          echo "handoff_cache_key=buildino-handoff-wf21-${GITHUB_RUN_ID}-${REQUEST_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Download source through authenticated Worker stream
         id: source_intake
@@ -478,7 +478,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: handoff
-          key: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
+          key: buildino-handoff-wf21-${{ github.run_id }}-${{ inputs.request_id }}
 
   ios_build:
     name: Authenticated Flutter iOS IPA build on macOS
@@ -660,7 +660,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: handoff
-          key: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
+          key: buildino-handoff-wf21-${{ github.run_id }}-${{ inputs.request_id }}
 
   publish:
     name: Trusted temporary Release publication
@@ -680,7 +680,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: handoff
-          key: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
+          key: buildino-handoff-wf21-${{ github.run_id }}-${{ inputs.request_id }}
           fail-on-cache-miss: false
 
       - name: Ensure publish handoff exists
@@ -944,6 +944,12 @@ jobs:
               "conclusion": "failure",
               "error_summary": "\n".join(parts)[:3200],
               "error_category": report.get("category","unknown"),
+              "error_stage": report.get("stage", stage),
+              "error_exit_code": report.get("exit_code"),
+              "technical_excerpt": (report.get("technical_excerpt") or [])[:8],
+              "fallback_signing_used": bool(report.get("fallback_signing_used", False)),
+              "java_version": report.get("java_version"),
+              "flavors": report.get("flavors", []),
               "auto_fixes": report.get("auto_fixes", []),
               "project_prepare": report.get("project_prepare"),
               "framework": report.get("framework") or status.get("framework"),
@@ -969,7 +975,12 @@ jobs:
               "request_id": os.environ["REQUEST_ID"], "status": "failure",
               "conclusion": "failure",
               "error_summary": "دسته خطا: سرویس امضای fallback بیلدینو\nمرحله: isolated_fallback_signing\n\nعلت: خروجی پروژه ساخته شد اما اعمال امضای اختصاصی بیلدینو ناموفق بود.\n\nنتیجه: مشکل از سرویس انتشار و امضای بیلدینو است، نه از سورس کاربر.\n\nراه‌حل: Secrets امضای fallback و سلامت Keystore را بررسی کنید.",
-              "error_category": "fallback_signing", "quota_action": "release", "assets": [],
+              "error_category": "fallback_signing",
+              "error_stage": "isolated_fallback_signing",
+              "error_exit_code": None,
+              "technical_excerpt": [],
+              "fallback_signing_used": True,
+              "quota_action": "release", "assets": [],
           }, ensure_ascii=False, separators=(",",":")), encoding="utf-8")
           PY
 
@@ -990,6 +1001,10 @@ jobs:
               "status": "failure",
               "conclusion": "failure",
               "error_summary": "انتشار خروجی در GitHub Release ناموفق بود.",
+              "error_category": "publish_failure",
+              "error_stage": "release_publish",
+              "error_exit_code": None,
+              "technical_excerpt": [],
               "quota_action": "release",
               "assets": [],
               "publish_outcome": os.environ.get("PREPARE_OUTCOME", "unknown"),
@@ -1025,7 +1040,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          HANDOFF_KEY: buildino-handoff-wf20-${{ github.run_id }}-${{ inputs.request_id }}
+          HANDOFF_KEY: buildino-handoff-wf21-${{ github.run_id }}-${{ inputs.request_id }}
         run: |
           set -Eeuo pipefail
           encoded="$(python3 - "$HANDOFF_KEY" <<'PY'
@@ -1040,7 +1055,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Buildino Runner WF-20"
+            echo "## Buildino Runner WF-21"
             echo
             echo "- Request: ${{ inputs.request_id }}"
             echo "- Target: ${{ inputs.build_target }}"

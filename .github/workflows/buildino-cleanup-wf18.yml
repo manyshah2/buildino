@@ -1,6 +1,6 @@
-name: Buildino Cleanup WF-17
+name: Buildino Cleanup WF-18
 
-run-name: "Buildino Cleanup WF-17 • ${{ github.run_id }}"
+run-name: "Buildino Cleanup WF-18 • ${{ github.run_id }}"
 
 on:
   schedule:
@@ -12,7 +12,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: buildino-cleanup-wf17
+  group: buildino-cleanup-wf18
   cancel-in-progress: true
 
 jobs:
@@ -70,7 +70,7 @@ jobs:
           current = int(os.environ["CURRENT_RUN_ID"])
           raw = subprocess.check_output([
               "gh", "api", "--paginate", "--slurp",
-              f"/repos/{repository}/actions/workflows/buildino-runner-wf20.yml/runs?status=completed&per_page=100"
+              f"/repos/{repository}/actions/workflows/buildino-runner-wf21.yml/runs?status=completed&per_page=100"
           ], text=True)
           pages = json.loads(raw)
           runs = [run for page in pages for run in page.get("workflow_runs", [])]
@@ -107,7 +107,7 @@ jobs:
           for cache in caches:
               key = str(cache.get("key", ""))
               created = cache.get("created_at")
-              if not key.startswith("buildino-handoff-wf20-") or not created:
+              if not key.startswith("buildino-handoff-wf21-") or not created:
                   continue
               timestamp = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
               if timestamp < cutoff:
@@ -124,7 +124,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Buildino Cleanup WF-17"
+            echo "## Buildino Cleanup WF-18"
             echo
             echo "Temporary Release and completed Runner Run retention: approximately 48 hours."
           } >> "$GITHUB_STEP_SUMMARY"

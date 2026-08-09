@@ -397,23 +397,101 @@ def upgrade_ksp_headless_npe(project: Path, log: str, preflight: dict | None = N
         "workspace_only": True,
     }
 
+def _android_gradle_properties(project: Path, preflight: dict | None = None) -> Path:
+    module = app_module_dir(project, preflight)
+    if module:
+        try:
+            rel = module.relative_to(project)
+            if rel.parts and rel.parts[0] == "android":
+                return project / "android" / "gradle.properties"
+        except ValueError:
+            pass
+    return project / "gradle.properties"
+
+
+def _set_gradle_property(path: Path, key: str, value: str) -> tuple[bool, str | None]:
+    text = read_text(path)
+    pattern = re.compile(rf"(?m)^(?P<prefix>\s*{re.escape(key)}\s*[=:]\s*)(?P<value>[^#\r\n]*)(?P<suffix>\s*(?:#.*)?)$")
+    match = pattern.search(text)
+    if match:
+        current = match.group("value").strip()
+        if current.lower() == value.lower():
+            return False, current
+        replacement = f"{match.group('prefix')}{value}{match.group('suffix')}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text[:match.start()] + replacement + text[match.end():], encoding="utf-8")
+        return True, current
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = text
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    path.write_text(prefix + f"{key}={value}\n", encoding="utf-8")
+    return True, None
+
+
+def _project_uses_legacy_support(project: Path) -> bool:
+    skip = {".git", ".gradle", "build", "node_modules", ".dart_tool"}
+    for pattern in ("build.gradle", "build.gradle.kts", "libs.versions.toml"):
+        for candidate in project.rglob(pattern):
+            try:
+                rel = candidate.relative_to(project)
+            except ValueError:
+                continue
+            if any(part in skip for part in rel.parts):
+                continue
+            if "com.android.support:" in read_text(candidate):
+                return True
+    return False
+
+
 def add_appcompat_for_missing_theme(project: Path, log: str, preflight: dict | None = None) -> dict | None:
-    if not re.search(r"Theme\.AppCompat(?:\.[A-Za-z0-9_]+)*.*(?:not found|resource.*not found)|resource style/Theme\.AppCompat", log, re.I | re.S):
+    theme_missing = bool(re.search(
+        r"Theme\.AppCompat(?:\.[A-Za-z0-9_]+)*.*(?:not found|resource.*not found)|resource style/Theme\.AppCompat",
+        log,
+        re.I | re.S,
+    ))
+    androidx_disabled = bool(re.search(
+        r"AndroidX dependencies.*android\.useAndroidX is not enabled|Set\s+android\.useAndroidX\s*=\s*true|android\.useAndroidX\s+is not enabled",
+        log,
+        re.I | re.S,
+    ))
+    if not theme_missing and not androidx_disabled:
         return None
     path = app_gradle(project, preflight)
     if not path:
         return None
+
     coordinate = "androidx.appcompat:appcompat:1.7.1"
-    changed, reason = add_gradle_dependency(path, coordinate)
-    if not changed:
+    dependency_added = False
+    reason = "not_required"
+    if theme_missing:
+        dependency_added, reason = add_gradle_dependency(path, coordinate)
+
+    gradle_text = read_text(path)
+    uses_androidx = dependency_added or "androidx." in gradle_text or androidx_disabled
+    properties_changed: list[str] = []
+    properties_path = _android_gradle_properties(project, preflight)
+    if uses_androidx:
+        changed, _ = _set_gradle_property(properties_path, "android.useAndroidX", "true")
+        if changed:
+            properties_changed.append("android.useAndroidX=true")
+        if _project_uses_legacy_support(project):
+            changed, _ = _set_gradle_property(properties_path, "android.enableJetifier", "true")
+            if changed:
+                properties_changed.append("android.enableJetifier=true")
+
+    if not dependency_added and not properties_changed:
         return None
     return {
-        "rule": "android_appcompat_missing_theme",
+        "rule": "android_appcompat_androidx_enablement",
         "file": str(path.relative_to(project)),
-        "before": "Theme.AppCompat resource unavailable",
-        "after": coordinate,
+        "gradle_properties": str(properties_path.relative_to(project)),
+        "before": "Theme.AppCompat unavailable / AndroidX disabled",
+        "after": "; ".join(([coordinate] if dependency_added else []) + properties_changed),
         "workspace_only": True,
         "reason": reason,
+        "dependency_added": dependency_added,
+        "properties_changed": properties_changed,
     }
 
 
