@@ -16,6 +16,7 @@ scripts/run_flutter_build.sh
 
 - Auto-Fixهای مرحله‌ای برای خطاهای زنجیره‌ای اجرا می‌شوند.
 - `org.gradle.java.home` نامعتبر فقط در Workspace موقت غیرفعال می‌شود.
+- خطای parsing گزینه‌های JVM در `gradlew` با اجرای مستقیم همان نسخه Gradle در Workspace موقت بازیابی می‌شود.
 - Keystore مفقود سورس باعث توقف خروجی آزمایشی نمی‌شود؛ SigningConfig موقتاً جدا و امضای fallback در Job ایزوله اعمال می‌شود.
 - علت، نتیجه و راه‌حل خطا از اولین Failure واقعی Gradle استخراج می‌شود.
 

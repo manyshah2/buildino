@@ -113,6 +113,10 @@ is_transient_log() {
   grep -Eiq 'UnknownHostException|Connection reset|Read timed out|Could not GET|Could not HEAD|Temporary failure|timed out|HTTP 5[0-9][0-9]|503 Service Unavailable|429 Too Many Requests' "$1"
 }
 
+is_wrapper_jvm_opts_log() {
+  grep -Eiq 'Could not find or load main class[[:space:]]+"?-Xm(x|s)[0-9]+[kKmMgG]?|ClassNotFoundException:[[:space:]]+"?-Xm(x|s)[0-9]+[kKmMgG]?' "$1"
+}
+
 java_required_by_log() {
   python3 scripts/android_java_runtime.py required-from-log "$1" 2>/dev/null || true
 }
@@ -146,8 +150,8 @@ PY
 }
 
 record_gradle_runtime_switch() {
-  local from_version="$1" to_version="$2" reason="$3"
-  FROM_VERSION="$from_version" TO_VERSION="$to_version" REASON="$reason" python3 - <<'PY'
+  local from_version="$1" to_version="$2" reason="$3" mode="${4:-downloaded_compatibility_retry}"
+  FROM_VERSION="$from_version" TO_VERSION="$to_version" REASON="$reason" GRADLE_MODE_VALUE="$mode" python3 - <<'PY'
 import json, os
 from pathlib import Path
 path = Path("handoff/gradle-runtime-switches.json")
@@ -159,6 +163,7 @@ data.setdefault("switches", []).append({
     "from": os.environ["FROM_VERSION"],
     "to": os.environ["TO_VERSION"],
     "reason": os.environ["REASON"],
+    "mode": os.environ.get("GRADLE_MODE_VALUE", "downloaded_compatibility_retry"),
     "source_modified": False,
 })
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -166,7 +171,7 @@ preflight = Path("handoff/preflight.json")
 if preflight.is_file():
     payload = json.loads(preflight.read_text(encoding="utf-8"))
     payload["gradle_version"] = os.environ["TO_VERSION"]
-    payload["gradle_mode"] = "downloaded_compatibility_retry"
+    payload["gradle_mode"] = os.environ.get("GRADLE_MODE_VALUE", "downloaded_compatibility_retry")
     preflight.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 }
@@ -196,6 +201,16 @@ run_gradle_retry() {
     rc=${PIPESTATUS[0]}
     set -e
     [ "$rc" -eq 0 ] && return 0
+
+    if [ "$attempt" -lt 3 ] && [ "$gradle_mode" = "wrapper" ] && is_wrapper_jvm_opts_log "$log"; then
+      if activate_gradle_runtime "$gradle_version" \
+        "Gradle wrapper JVM option parsing failed while running ${label}; retrying with the same Gradle distribution directly" \
+        "downloaded_wrapper_jvm_opts_retry"; then
+        failure_stage="${label//-/_}_wrapper_jvm_opts_retry"
+        sleep 2
+        continue
+      fi
+    fi
 
     required_gradle="$(gradle_required_by_log "$log")"
     if [ "$attempt" -lt 3 ] && [ -n "$required_gradle" ] && version_is_lower "${gradle_version:-0}" "$required_gradle"; then
@@ -246,11 +261,11 @@ install_fallback_gradle() {
 }
 
 activate_gradle_runtime() {
-  local required="$1" reason="$2" previous="${gradle_version:-unknown}"
+  local required="$1" reason="$2" mode="${3:-downloaded_compatibility_retry}" previous="${gradle_version:-unknown}"
   install_fallback_gradle "$required" > >(tee -a handoff/logs/gradle-compatibility-switch.log) 2>&1
   gradle_version="$required"
-  gradle_mode="downloaded_compatibility_retry"
-  record_gradle_runtime_switch "$previous" "$required" "$reason"
+  gradle_mode="$mode"
+  record_gradle_runtime_switch "$previous" "$required" "$reason" "$mode"
 }
 
 failure_stage="source_validation"; failure_kind="user"; failure_code=3
@@ -341,9 +356,10 @@ build_one() {
       failure_stage="${type}_output_collect"; failure_code=30
       copy_outputs "$type" || return 30
       return 0
+    else
+      rc=$?
+      failure_code="$rc"
     fi
-    rc=$?
-    failure_code="$rc"
 
     [ "$round" -lt 5 ] || return "$rc"
     failure_stage="native_android_${type}_autofix_$((round + 1))"
